@@ -1,0 +1,199 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(lubridate)
+```
+
+```{r}
+#Download daily detainee file -- Started Dec. 1, 2022
+download.file("https://report.boonecountymo.org/mrcjava/servlet/RMS01_MP.R00030s?run=1&D_DETAIL=1&R001=&R002=&outfmt=13", destfile = "data/detainees.xlsx")
+
+```
+
+
+#RAW running list - this will ensure that no data is lost as we collect it, and we can keep an eye on what happens for individual detainees if needed.
+```{r}
+#Yesterday's detainees
+old_detainee <- read_csv("data/master_list_raw.csv") #To start this, I had saved the CSV from detainees as of Dec. 1. In this chunk, I combine them with detainees as of Dec. 2 (below)
+
+#Need to change this for bind because court_time automatically imports as character for new file
+old_detainee$court_time <- as.character(old_detainee$court_time)
+
+#Today's detainees
+new_detainee <- read_excel("data/detainees.xlsx") %>% clean_names()
+
+#Make sure none of this weird character sneaks in
+new_detainee$middle_name <- na_if(new_detainee$middle_name, "(NMI)")
+
+new_detainee <- new_detainee %>%  
+  mutate(name_join = paste0(last_name, ", ", first_name),
+         name_join = if_else(is.na(middle_name), name_join, paste0(name_join, " ", middle_name)),
+         name_join = if_else(is.na(suffix), name_join, paste0(name_join, " ", suffix)),
+         download_date = Sys.Date()) 
+
+#Combine raw data
+master_list_raw <- bind_rows(old_detainee, new_detainee) 
+
+#Save file
+write_csv(master_list_raw, "data/master_list_raw.csv")
+
+```
+
+#Pull together an aggregate file that's easier for broad analysis
+```{r}
+#Concatenate all charges and charge numbers -- they change and are sometimes dropped without the person leaving jail, making it an unreliable field for tracking broad trends with individuals
+
+detainees1 <- old_detainee %>% 
+  select(-download_date) %>% 
+  distinct() %>% 
+  arrange(match(charge_description, unique(charge_description)), name_join) %>% #this puts charges in alphabetical order, important so charges are always in same order and group together 
+  arrange(charge_description) %>% 
+  group_by(name_join, age, race, sex) %>% 
+  summarise(charges = toString(charge_description), total_bond = sum(bond_amt))
+
+detainees2 <- new_detainee %>% 
+  arrange(match(charge_description, unique(charge_description)), name_join) %>% 
+  arrange(charge_description) %>% 
+  group_by(name_join, age, race, sex) %>% 
+  summarise(charges = toString(charge_description), total_bond = sum(bond_amt)) 
+
+detainees_all <- detainees1 %>% 
+  full_join(detainees2, by = c("name_join", "race", "sex", "age")) %>% 
+  mutate(charges = if_else(charges.x == charges.y, charges.x, charges.y)) %>% 
+  mutate(charges = if_else(is.na(charges), charges.y, charges)) %>% 
+  mutate(total_bond = if_else(total_bond.x == total_bond.y, total_bond.x, total_bond.y)) %>% 
+  mutate(total_bond = if_else(is.na(total_bond), total_bond.y, total_bond)) %>% 
+  select(-c(charges.x, charges.y, total_bond.x, total_bond.y)) 
+#Joining it this way allows me to update the list if charges or bond changes for any reason. The end result will give us the most up-to-date information.
+
+```
+
+```{r}
+#Indicate people who got out of jail
+
+yesterday <- old_detainee %>% 
+  filter(download_date == Sys.Date()-1) %>% 
+  arrange(match(charge_description, unique(charge_description)), name_join) %>% #this puts charges in alphabetical order, important so charges are always in same order and group together 
+  arrange(charge_description) %>% 
+  group_by(name_join, age, race, sex) %>% 
+  summarise(charges = toString(charge_description), total_bond = sum(bond_amt))
+
+released <- yesterday %>% 
+  anti_join(detainees2, by = c("name_join")) %>% 
+  mutate(release_date = Sys.Date()-1)
+
+#Just for fun, see how many people were added (this is incomplete depending on time of day. We'll get the reliable data from 0700 report)
+detainees2 %>% anti_join(detainees1, by = c("name_join"))
+
+```
+
+
+#Add in 0700 Report info
+```{r}
+#Note file download link changes every day. I split the part of the url that is consistent with the part that changes, and then wrote a formula using paste0 to update it every day
+
+old_seven_report <- read_csv("data/seven_master_raw.csv")
+
+old_seven_report$booking_time <- as.character(old_seven_report$booking_time)
+
+seven_url <- "https://report.boonecountymo.org/mrcjava/servlet/RMS01_MP.R00070s?run=1&D_DETAIL=1&CALCULA007=" 
+seven_date <- paste0(month(Sys.Date()), "%2F", day(Sys.Date()), "%2F", year(Sys.Date()), "&CALCULA008=&outfmt=13")
+ 
+#Download updated url           
+download.file(paste0(seven_url, seven_date), destfile = "data/seven_report.xlsx")
+
+#download.file(seven_url, destfile = "data/seven_report.xlsx")
+
+#Read in daily file
+new_seven_report <- read_excel("data/seven_report.xlsx") %>% clean_names() %>% 
+  mutate(download_date = Sys.Date()) 
+
+#Bind to historical data
+
+seven_master_raw <- bind_rows(old_seven_report, new_seven_report) 
+
+write_csv(seven_master_raw, "data/seven_master_raw.csv")
+
+```
+
+```{r}
+
+#Calculate age -- will make joining to detainees more reliable later
+
+#First set birthday and booking dates as dates
+new_seven_report$date_of_birth <- mdy(new_seven_report$date_of_birth)
+new_seven_report$booking_date <- mdy(new_seven_report$booking_date)
+
+new_seven_report <- new_seven_report %>% 
+  mutate(age = (date_of_birth %--% Sys.Date())/years(1), 
+  age = as.numeric(substring(age, 1, 2)))
+
+#Same day releases -- this doesn't cover everyone. Some same-day releases are included in detainee list just because of when they updated the list. But this makes sure we don't miss anyone.
+same_day_releases <- new_seven_report %>% 
+  anti_join(detainees_all, by = c("name" = "name_join")) %>% 
+  group_by(name, age, sex, booking_date) %>% 
+  summarise(charges = toString(charge_description), court_disposition = toString(court_disposition), arresting_agencies = toString(arresting_agency), total_bond = sum(bond_amt)) %>% 
+  mutate(release_date = booking_date)
+
+#import historical file
+old_same_day_releases <- read_csv("data/same_day_releases.csv")
+
+#bind
+all_same_day_releases <- bind_rows(old_same_day_releases, same_day_releases)
+
+#Save new version
+write_csv(all_same_day_releases, "data/same_day_releases.csv")
+
+```
+
+```{r}
+#Concatenate all charges and charge numbers -- they change and are sometimes dropped without the person leaving jail, making it an unreliable field for tracking broad trends with individuals
+
+new_entries <- new_seven_report %>% 
+  group_by(name, age, sex, booking_date) %>% 
+  summarise(charges = toString(charge_description), court_disposition = toString(court_disposition), arresting_agencies = toString(arresting_agency), total_bond = sum(bond_amt))
+
+```
+
+```{r}
+#Read in old file
+bcj_master <- read_csv("data/bcj_master.csv")
+
+#test
+bcj_master <- new_entries %>% 
+  left_join(select(same_day_releases, release_date, name, age, sex), by = c("name", "age", "sex")) %>% 
+  full_join(bcj_master, by = c("name", "age", "sex", "booking_date")) %>% 
+  mutate(charges = charges.y,
+         charges = if_else(is.na(charges), charges.x, charges.y)) %>% 
+  mutate(charges_at_arrest = if_else(!is.na(charges.x), charges.x, charges_at_arrest)) %>% 
+  select(-c(charges.x, charges.y)) %>% 
+  mutate(bond_at_arrest = if_else(!is.na(total_bond.x), total_bond.x, bond_at_arrest)) %>% 
+  mutate(total_bond = if_else(is.na(total_bond.y), bond_at_arrest, total_bond.y)) %>% 
+  select(-c(total_bond.x, total_bond.y)) %>% 
+  mutate(arresting_agencies = if_else(is.na(arresting_agencies.x), arresting_agencies.y, arresting_agencies.x)) %>% 
+  select(-c(arresting_agencies.x, arresting_agencies.y)) %>%
+  mutate(court_disposition = if_else(is.na(court_disposition.x), court_disposition.y, court_disposition.x)) %>% 
+  select(-c(court_disposition.x, court_disposition.y)) %>% 
+  mutate(release_date = if_else(is.na(release_date.x), release_date.y, release_date.x)) %>% 
+  select(-c(release_date.x, release_date.y)) %>% 
+  left_join(select(released, release_date, name_join, sex, age, race), by = c("name" = "name_join", "sex", "age", "race")) %>% 
+  mutate(release_date = if_else(is.na(release_date.x), release_date.y, release_date.x)) %>% 
+  select(-c(release_date.x, release_date.y)) %>% distinct()
+
+bcj_master <- bcj_master %>% left_join(select(released, release_date, name_join, sex, age), by = c("name" = "name_join", "sex", "age")) %>% 
+  mutate(release_date = if_else(is.na(release_date.x), release_date.y, release_date.x),
+         race = if_else(is.na(race.x), race.y, race.x)) %>% 
+  select(-c(release_date.x, release_date.y, race.x, race.y)) %>% distinct()
+
+
+write_csv(bcj_master, "data/bcj_master.csv")
+
+```
+
+
