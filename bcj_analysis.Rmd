@@ -1,0 +1,693 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(lubridate)
+library(ggplot2)
+library(leaflet)
+library(sf)
+library(tidycensus)
+```
+
+```{r}
+#Load in datasets
+
+bcj_master <- read_csv("data/bcj_master.csv")
+master_list_raw <- read_csv("data/master_list_raw.csv")
+seven_master <- read_csv("data/seven_master_raw.csv")
+same_day_releases <- read_csv("data/same_day_releases.csv")
+
+addresses_update_final <- read_csv("data/addresses.csv")
+
+```
+
+
+```{r}
+#Integrity checks
+
+#Check dates -- did I miss any uploads? (yes) Is the data still sound enough for analysis?
+master_list_raw %>% count(download_date)
+
+```
+
+```{r}
+
+#Create categories of charges -- based on previous reporting I found studying bail and what I've browsed in the data, I want to track violent crimes, property crimes, drug crimes and traffic crimes. I will also create a separate field to indicate FTA charges and probation violations. 
+
+#I used the UCR handbook to define "violent crimes" and "property crimes" and tried to capture as many spelling variations as I could find. Then I concatenated them into one field, "crime_types" to capture instances where their might be more than one type of charge per person.
+bcj_master <- bcj_master %>% 
+  mutate(violent = "", 
+         violent = if_else(grepl("assault", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("aslt", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("murder", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("manslaughter", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("abuse", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("sodomy", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("rape", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("molestation", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("robbery", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("armed", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("weapon", charges, ignore.case = T), "violent", violent),
+         drug = "",
+         drug = if_else(grepl("subs", charges, ignore.case = T), "drug", drug),
+         drug = if_else(grepl("delivery", charges, ignore.case = T), "drug", drug),
+         drug = if_else(grepl("drug", charges, ignore.case = T), "drug", drug),
+         property = "",
+         property = if_else(grepl("stealing", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("prop", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("burg", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("arson", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("larceny", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("theft", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("trespass", charges, ignore.case = T), "property", property),
+         traffic = "",
+         traffic = if_else(grepl("dws", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("dwi", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("dwr", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("driv", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("license", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("reg", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("veh", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("plate", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("speed", charges, ignore.case = T), "traffic", traffic)) %>% 
+  mutate(crime_types = paste0(violent, " ", drug, " ", property, " ", traffic),
+         crime_types = if_else(crime_types == "   ", "other", crime_types)) %>% 
+  select(-c(violent, drug, property, traffic))
+  
+#Trim all the white space 
+bcj_master$crime_types <- trimws(bcj_master$crime_types)
+
+#FTA
+bcj_master <- bcj_master %>% 
+  mutate(fta = if_else(grepl("FTA", charges), "Y", "N"))
+
+#Probation violations
+bcj_master <- bcj_master %>% 
+  mutate(prob_violation = "N",
+         prob_violation = if_else(grepl("prob vio", charges, ignore.case = T), "Y", prob_violation), 
+         prob_violation = if_else(grepl("probation", charges, ignore.case = T), "Y", prob_violation))
+
+```
+
+```{r}
+#Repeate above for master list -- want to be able to see bond PER CHARGE
+master_list_raw <- master_list_raw %>% 
+  mutate(crime_type = "other", #This will be the catch-all for things that don't fit into any category I can think of
+         crime_type = if_else(grepl("assault", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("aslt", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("murder", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("manslaughter", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("abuse", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("sodomy", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("rape", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("molestation", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("robbery", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("armed", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("weapon", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("subs", charge_description, ignore.case = T), "drug", crime_type),
+         crime_type = if_else(grepl("delivery", charge_description, ignore.case = T), "drug", crime_type),
+         crime_type = if_else(grepl("drug", charge_description, ignore.case = T), "drug", crime_type),
+         crime_type = if_else(grepl("stealing", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("prop", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("burg", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("arson", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("larceny", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("theft", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("trespass", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("dwi", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("dws", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("dwr", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("driv", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("license", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("reg", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("veh", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("plate", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("speed", charge_description, ignore.case = T), "traffic", crime_type),)
+
+#FTA
+master_list_raw <- master_list_raw %>% 
+  mutate(fta = if_else(grepl("FTA", charge_description), "Y", "N"))
+
+#Probation violations
+master_list_raw <- master_list_raw %>%
+  mutate(prob_violation = "N",
+         prob_violation = if_else(grepl("prob vio", charge_description, ignore.case = T), "Y", prob_violation), 
+         prob_violation = if_else(grepl("probation", charge_description, ignore.case = T), "Y", prob_violation))
+
+```
+
+#Questions for analysis
+1. How many people returned to jail since Dec. 1? How long was their stay and what were their charges? Where are they from and what is their demographic make-up?
+2. How long are people staying in the jail for each charge and bond amount? Are there any disparities based on race, sex, or address (median income)? How many people are staying longer than a week?
+3. What is the racial make-up of the jail? How does this compare to Boone County's overall population? 
+4. What are men and women charged with the most? Are there any racial disparities in charges?
+5. What is the rate of jailing per 100k for each sex and race?
+6. Is there any evidence of certain neighborhoods being over-policed?
+7. How many jail detainees are brought in on FTA charges?
+
+```{r}
+#How many people have returned to jail more than once since Dec. 1?
+
+repeats <- bcj_master %>% 
+  count(name) %>%
+  arrange(desc(n)) %>% 
+  filter(n > 1)
+#Shows how many people appear more than once -- this isn't enough though because there are some errors with the jail's data entry ("Wilkins, Chatrina Latrice R)
+
+#show full details of each visit for each person
+repeats_full <- bcj_master %>% 
+  semi_join(repeats, by = "name") %>%
+  mutate(time_spent = release_date-booking_date) %>% 
+  arrange(desc(booking_date)) %>% 
+  arrange(name) 
+  
+```
+
+```{r}
+#How long was repeats' stay and what were their charges? Where are they from and what is their demographic make-up?
+
+#charge types really run the gammut. A surprising amount of "other"
+repeats_full %>% 
+  count(crime_types) %>% 
+  arrange(desc(n))
+
+repeats_full %>% 
+  select(name, booking_date, release_date, time_spent) #Doesn't seem like a clear pattern in time spent, but it does seem higher than the rest of the jail population
+
+```
+```{r}
+#Before we do anything with addresses and demographics, I need to clean the addresses 
+
+seven_master <- seven_master %>% 
+  mutate(clean_address = address)
+
+seven_master %>% 
+  filter(grepl("LN ", clean_address))
+
+seven_master$clean_address <- gsub(" LN.*\\,", " LN,", seven_master$clean_address)
+seven_master$clean_address <- gsub(" BLVD.*\\,", " BLVD,", seven_master$clean_address)
+seven_master$clean_address <- gsub(" RD.*\\,", " RD,", seven_master$clean_address)
+seven_master$clean_address <- gsub(" AVE.*\\,", " AVE,", seven_master$clean_address)
+seven_master$clean_address <- gsub(" DR.*\\,", " DR,", seven_master$clean_address)
+seven_master$clean_address <- gsub(" CT.*\\,", " CT,", seven_master$clean_address)
+seven_master$clean_address <- gsub(" PL.*\\,", " PL,", seven_master$clean_address)
+seven_master$clean_address <- gsub("BROADWAY.*\\,", "BROADWAY,", seven_master$clean_address)
+seven_master$clean_address <- gsub("RANGE LINE", "RANGELINE", seven_master$clean_address)
+seven_master$clean_address <- gsub("SOUTH ELIZABETH", "SOUTH ELIZABETH ST", seven_master$clean_address)
+seven_master$clean_address <- gsub(" ST.*\\,", " ST,", seven_master$clean_address)
+seven_master$clean_address <- gsub("NINTH", "9TH", seven_master$clean_address)
+seven_master$clean_address <- gsub("FOURTH", "4TH", seven_master$clean_address)
+seven_master$clean_address <- gsub("SEVENTH", "7TH", seven_master$clean_address)
+
+addresses <- seven_master %>% 
+  count(name, address, clean_address, booking_date) %>% 
+  tidygeocoder::geocode(clean_address, method = 'osm', lat = latitude, lon = longitude, progress = TRUE)
+
+addresses %>% 
+  filter(!is.na(latitude)) %>% 
+  count(clean_address) #710 addresses coded properly
+
+addresses %>% filter(is.na(latitude)) %>% 
+  count(clean_address) %>% 
+  arrange(desc(n)) #439 did not, and I can't figure out why
+
+#Pull in geocodio API key
+#usethis::edit_r_environ()
+
+test <- addresses %>%
+  mutate(clean_address = address) %>% 
+  filter(is.na(latitude)) %>% 
+  tidygeocoder::geocode(clean_address, method = "geocodio", lat = latitude, lon = longitude, progress = TRUE)
+
+#Check
+test %>% 
+  filter(is.na(latitude...8))
+
+#Clean and combine with the rest of addresses
+test <- test %>% 
+  select(-c(latitude...6, longitude...7)) %>% 
+  rename("latitude" = latitude...8,
+         "longitude" = longitude...9)
+
+test2 <- addresses %>% 
+  filter(!is.na(latitude))
+
+addresses_update <- bind_rows(test, test2) 
+
+#Check
+addresses %>% count(clean_address)
+
+addresses_update %>% count(clean_address)
+
+#Come back to this at some point and figure out why the number of clean_addresses is different -- I know it has something to do with the adjustment I made for the test geocode, but not exactly sure if I need to worry about it
+
+#Take care of the "streets of columbia" discrepancy
+
+homeless <- addresses_update %>% 
+  filter(grepl("STREETS OF", address)) %>% 
+  mutate(latitude = NA,
+         longitude = NA)
+
+addresses_update2 <- addresses_update %>% 
+  filter(!grepl("STREETS OF", address))
+
+addresses_update_final <- bind_rows(addresses_update2, homeless) 
+
+#check
+addresses_update_final %>% count(clean_address)
+
+addresses_update_final %>% filter(grepl("STREETS OF", address))
+
+#Write new csv
+write_csv(addresses_update_final, "data/addresses.csv")
+
+```
+
+```{r}
+#Map all residences
+
+#Map resolved complaints, color-code by resolution time
+addresses_update_final %>% 
+  count(clean_address, longitude, latitude) %>% 
+  leaflet() %>%  
+  addTiles %>% 
+  setView(-92.328636, 38.951561, zoom = 12) %>% 
+addCircleMarkers( weight = 1, radius = 2, stroke = F, fillOpacity = 0.5, popup = addresses_update_final$clean_address) 
+```
+
+```{r}
+#Where are repeats from?
+addresses_update_final$booking_date <- mdy(addresses_update_final$booking_date)
+
+repeats %>% 
+  left_join(addresses_update_final, by = c("name")) %>% 
+  count(clean_address, longitude, latitude) %>% 
+  leaflet() %>%  
+  addTiles %>% 
+  setView(-92.328636, 38.951561, zoom = 12) %>% 
+  addCircleMarkers( weight = 1, radius = 2, stroke = F, fillOpacity = 0.5) 
+```
+
+```{r}
+#Match with census income and block group data
+
+#Make codevio_master sf so we can do spatial join
+addresses_sf <- addresses_update_final %>% 
+  filter(!is.na(latitude))
+
+addresses_sf <- st_as_sf(addresses_sf, coords = c("longitude", "latitude"), crs = 4326)
+
+#Import census data
+
+#Median household income in last 12 months (2020 inflation-adjusted dollars)
+mo_income <- get_acs(geography = "block group",
+              variables = c(median_income = "B19013_001"),
+              state = "MO",
+              year = 2021,
+              #Include block group geometry
+              geometry = T) 
+
+#Note the very large margins of error. Unfortunately ACS is the only income estimation available -- we don't have anything from 2020 Decennial census except population.
+
+#Total population - sticking with acs for consistency.
+mo_pop <- get_acs(geography = "block group",
+              variables = c(population = "B01001_001"),
+              state = "MO",
+              year = 2021)
+
+#Join together
+census_df <- mo_income %>% 
+  full_join(mo_pop, by = "GEOID") %>% 
+  rename("block_group" = NAME.x,
+         "median_income" = estimate.x,
+         "income_moe" = moe.x,
+         "population" = estimate.y,
+         "pop_moe" = moe.y) %>% 
+  select(-c(variable.x, variable.y, NAME.y))
+
+#Set crs to the same as cpd_sf
+st_crs(census_df)#Currently in EPSG 4269
+census_df <- st_transform(census_df, crs = 4326)
+
+#Join to cpd_sf -- place each lon/lat point into its appropriate block group, so we can see median household income for that area
+addresses_sf <- st_join(addresses_sf, census_df, join = st_within) 
+
+#Set df as tibble so that code will run faster -- geometry slows everything down and since I did the join, I really don't need it anymore
+addresses_sf <- as.tibble(addresses_sf)
+
+```
+
+```{r}
+
+#Add field to indicate income range
+addresses_sf <- addresses_sf %>% 
+  mutate(income_range = median_income,
+         income_range = ifelse(median_income <= 20000, "$20,000 or under", income_range),
+         income_range = ifelse(median_income > 20000 & median_income <= 30000, "$20,001 - $30,000", income_range),
+         income_range = ifelse(median_income > 30000 & median_income <= 50000, "$30,001 - $50,000", income_range),
+         income_range = ifelse(median_income > 50000 & median_income <= 75000, "$50,001 - $75,000", income_range),
+         income_range = ifelse(median_income > 75000 & median_income <= 100000, "$75,001-$100,000", income_range),
+         income_range = ifelse(median_income > 100000 & median_income <= 150000, "$100,001-$150,000", income_range),
+         income_range = ifelse(median_income >= 150000, "More than $150,000", income_range)) 
+
+#Make a graph to show number of detainees in each income range
+
+addresses_sf %>% 
+  group_by(income_range, block_group) %>% 
+  summarise(total_detainees = n()) %>% 
+  count(income_range) %>% 
+  ggplot(aes(x=income_range, y = n)) +
+  geom_col() +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+
+#Adjust for the total population living in each income range -- doing this in two steps
+income_range_pop_1 <- addresses_sf %>% 
+  group_by(income_range, block_group, population) %>% 
+  summarise(total_detainees = n())
+
+detainees_per_income_range <- income_range_pop_1 %>% 
+  group_by(income_range) %>% 
+  summarise(sum_pop = sum(population), total_detainees = sum(total_detainees)) %>% 
+  mutate(detainees_per_100000 = total_detainees/sum_pop*100000)
+
+#Make a basic bar graph 
+detainees_per_income_range %>% 
+  mutate(income_range = fct_relevel(income_range, "$20,000 or under", "$20,001 - $30,000", "$30,001 - $50,000", "$50,001 - $75,000", "$75,001-$100,000", "$100,001-$150,000", "More than $150,000", "NA")) %>% 
+  ggplot(aes(x=income_range, y = detainees_per_100000)) +
+  geom_col() +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) +
+  scale_y_continuous(labels=scales::number_format()) +
+  xlab("Median household income in the last year (2020 inflation adjusted)") +
+  ylab("Number of detainees per 100,000 in income range") +
+  labs(title = "Rate of detainees by income range")
+
+
+#This shows that while the raw number of detainees from $50k-$75k neighborhoods is higher, the rate is highest for $20-$30k neighborhoods.
+```
+
+```{r}
+#Do people from lower-income neighborhoods spend longer times in jail?
+
+addresses_sf$booking_date <- mdy(addresses_sf$booking_date)
+
+#join addresses to bcj_master
+bcj_master %>% 
+  left_join(select(addresses_sf, name, booking_date, clean_address, geometry, block_group, median_income, population, income_range), by = c("name" , "booking_date")) %>% distinct() %>%  #then calculate time spent in jail - start by looking only at people who showed up and left in the data gathering period
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% 
+  mutate(time_spent = release_date-booking_date) 
+
+
+#Check out only people in the $20k-$30k range. How much time are they spending in jail?
+bcj_master %>% 
+  left_join(select(addresses_sf, name, booking_date, clean_address, geometry, block_group, median_income, population, income_range), by = c("name", "booking_date")) %>% distinct() %>%  #then calculate time spent in jail - start by looking only at people who showed up and left in the data gathering period
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% 
+  mutate(time_spent = release_date-booking_date) %>% 
+  filter(income_range == "$20,001 - $30,000") %>% 
+  count(time_spent) %>% 
+  ggplot(aes(x=time_spent, y = n)) +
+  geom_col() +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) +
+  scale_y_continuous(labels=scales::number_format()) +
+  xlab("Time spent in jail for people from low-income areas") +
+  ylab("Number of detainees ") +
+  labs(title = "Number of low-income detainees by time spent in jail")
+
+#Do the same for higher income range. $75k-100k
+bcj_master %>% 
+  left_join(select(addresses_sf, name, booking_date, clean_address, geometry, block_group, median_income, population, income_range), by = c("name", "booking_date")) %>% distinct() %>%  #then calculate time spent in jail - start by looking only at people who showed up and left in the data gathering period
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% 
+  mutate(time_spent = release_date-booking_date) %>% 
+  filter(income_range == "$75,001-$100,000") %>% 
+  count(time_spent) %>% 
+  ggplot(aes(x=time_spent, y = n)) +
+  geom_col() +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) +
+  scale_y_continuous(labels=scales::number_format()) +
+  xlab("Time spent in jail for people from higher-income areas") +
+  ylab("Number of detainees") +
+  labs(title = "Number of higher-income detainees by time spent in jail")
+
+#Most people from all incomes just seem to spend less than a full day in jail
+```
+```{r}
+#Narrow to only people who stay a day or longer
+bcj_master %>% 
+  left_join(select(addresses_sf, name, booking_date, clean_address, geometry, block_group, median_income, population, income_range), by = c("name", "booking_date")) %>% distinct() %>%  #then calculate time spent in jail - start by looking only at people who showed up and left in the data gathering period
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% 
+  mutate(time_spent = release_date-booking_date) %>% 
+  filter(time_spent > 0) %>% 
+  group_by(income_range, time_spent) %>% 
+  summarise(num_detainees = n()) %>% 
+  ggplot(aes(x = time_spent, y = num_detainees, color = income_range)) +
+  geom_line() +
+  geom_point() +
+  xlim(0, 25)  #most clustered in this range so zooming in to look closer
+
+```
+```{r}
+#Group time_spent into bigger categories
+
+bcj_master %>% 
+  left_join(select(addresses_sf, name, booking_date, clean_address, geometry, block_group, median_income, population, income_range), by = c("name", "booking_date")) %>% distinct() %>%  #then calculate time spent in jail - start by looking only at people who showed up and left in the data gathering period
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% 
+  mutate(time_spent = release_date-booking_date) %>% 
+  mutate(time_clean = as.numeric(str_extract(time_spent,"(\\w+)")),
+                time_range = as.character(time_clean),
+         time_range = if_else(time_clean == 0, "Less than one day", time_range),
+         time_range = if_else(time_clean > 0 & time_clean <= 3, "1-3 days", time_range),
+         time_range = if_else(time_clean > 3 & time_clean <= 7, "Less than one week", time_range),
+         time_range = if_else(time_clean > 7 & time_clean <= 14, "1-2 weeks", time_range),
+         time_range = if_else(time_clean > 14 & time_clean <= 30, "A month or less", time_range),
+         time_range = if_else(time_clean > 30 & time_clean <= 90, "1-3 months", time_range),
+         time_range = if_else(time_clean > 90 & time_clean <= 270, "3-6 months", time_range),
+         time_range = if_else(time_clean > 270 & time_clean <= 365, "6 months - 1 year", time_range),
+         time_range = if_else(time_clean > 365, "Over a year", time_range)) %>% 
+  group_by(income_range, time_range) %>% 
+  summarise(detainees = n()) %>% #join to detainees_per_income_range,  for total detainees of each range
+  left_join(select(detainees_per_income_range, income_range, total_detainees), by = "income_range") %>% 
+  mutate(pct = (detainees/total_detainees)*100) #Calculate percentage
+
+#Figure out a way to graph this -- This seems to show people from lower-income neighborhoods spend a slightly longer time in jail
+
+#Make a bar chart
+
+bcj_master %>% 
+  left_join(select(addresses_sf, name, booking_date, clean_address, geometry, block_group, median_income, population, income_range), by = c("name", "booking_date")) %>% distinct() %>%  #then calculate time spent in jail - start by looking only at people who showed up and left in the data gathering period
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% 
+  mutate(time_spent = release_date-booking_date) %>% 
+  mutate(time_clean = as.numeric(str_extract(time_spent,"(\\w+)")),
+                time_range = as.character(time_clean),
+         time_range = if_else(time_clean == 0, "Less than one day", time_range),
+         time_range = if_else(time_clean > 0 & time_clean <= 3, "1-3 days", time_range),
+         time_range = if_else(time_clean > 3 & time_clean <= 7, "4-7 days", time_range),
+         time_range = if_else(time_clean > 7 & time_clean <= 14, "1-2 weeks", time_range),
+         time_range = if_else(time_clean > 14 & time_clean <= 30, "2-4 weeks", time_range),
+         time_range = if_else(time_clean > 30 & time_clean <= 90, "1-3 months", time_range),
+         time_range = if_else(time_clean > 90 & time_clean <= 270, "3-6 months", time_range),
+         time_range = if_else(time_clean > 270 & time_clean <= 365, "6 months - 1 year", time_range),
+         time_range = if_else(time_clean > 365, "Over a year", time_range)) %>% 
+  group_by(income_range, time_range) %>% 
+  summarise(detainees = n()) %>% #join to detainees_per_income_range,  for total detainees of each range
+  left_join(select(detainees_per_income_range, income_range, total_detainees), by = "income_range") %>% 
+  mutate(pct = (detainees/total_detainees)*100) %>% 
+  ggplot(aes(x = time_range, y = pct, fill = income_range)) +
+  geom_bar(position="dodge", stat="identity") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) 
+
+
+```
+
+
+```{r}
+#Make the same graph, but looking at race
+
+#calculate total of each race
+race_totals <- bcj_master %>% 
+  filter(!is.na(race)) %>% 
+  group_by(race) %>% 
+  summarise(total_race = n())
+
+bcj_master %>% 
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% #calculate time spent in jail - start by looking only at people who showed up and left in the data gathering period
+  filter(!is.na(race)) %>% #only detainees (should end up taking out most of the 0 day people)
+  mutate(time_spent = release_date-booking_date) %>% 
+  mutate(time_clean = as.numeric(str_extract(time_spent,"(\\w+)")),
+                time_range = as.character(time_clean),
+         time_range = if_else(time_clean == 0, "Less than one day", time_range),
+         time_range = if_else(time_clean > 0 & time_clean <= 3, "1-3 days", time_range),
+         time_range = if_else(time_clean > 3 & time_clean <= 7, "4-7 days", time_range),
+         time_range = if_else(time_clean > 7 & time_clean <= 14, "1-2 weeks", time_range),
+         time_range = if_else(time_clean > 14 & time_clean <= 30, "2-4 weeks", time_range),
+         time_range = if_else(time_clean > 30 & time_clean <= 90, "1-3 months", time_range),
+         time_range = if_else(time_clean > 90 & time_clean <= 270, "3-6 months", time_range),
+         time_range = if_else(time_clean > 270 & time_clean <= 365, "6 months - 1 year", time_range),
+         time_range = if_else(time_clean > 365, "Over a year", time_range)) %>% 
+  group_by(race, time_range) %>% 
+  summarise(detainees = n()) %>% #join to race_totals
+  left_join(race_totals, by = "race") %>% 
+  mutate(pct = (detainees/total_race)*100) %>% 
+  ggplot(aes(x = time_range, y = pct, fill = race)) +
+  geom_bar(position="dodge", stat="identity") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) 
+
+#No clear pattern with W & B detainees. A & I look crazy but it's just because there are so few of them
+```
+```{r}
+# What is the racial make-up of the jail? How does this compare to Boone County's overall population? 
+
+race_totals %>% 
+  mutate(total_pop = sum(total_race),
+         pct_total = (total_race/total_pop)*100)
+
+#See Census quick facts on Boone County: https://www.census.gov/quickfacts/fact/table/boonecountymissouri#
+#10% of the county is Black -- but at least 41% of the jail population is Black
+
+
+```
+```{r}
+#What is the rate of jailing per 100k for each sex and race? - Start with just white and Black
+
+acs2021_var <- load_variables(2021, "acs5", cache=TRUE)
+#B01001A_001 - white
+#B01001B_001 - black
+
+#White population
+wpop <- get_acs(geography = "county",
+              variables = c(population = "B01001A_001"),
+              state = "MO",
+              county = "Boone County",
+              year = 2021) %>% 
+  mutate(variable = "W")
+
+#Black population
+bpop <- get_acs(geography = "county",
+              variables = c(population = "B01001B_001"),
+              state = "MO",
+              county = "Boone County",
+              year = 2021) %>% 
+  mutate(variable = "B")
+
+bc_race_census <- bind_rows(wpop, bpop)
+
+race_totals %>% 
+  left_join(select(bc_race_census, variable, estimate), by = c("race" = "variable")) %>% 
+  mutate(jail_rate = (total_race/estimate)*100000)
+
+#The rate of Black people being jailed in Boone County is about 2,000 per 100k people -- roughly six times what it is for white people
+#Note this is an estimation -- should probably go back and subtract population under 18
+
+```
+```{r}
+#Same thing for sex -- do at the same time black women vs white women
+
+#B01001_026 - total female
+#B01001_002 - total male
+
+female_pop <- get_acs(geography = "county",
+              variables = c(population = "B01001_026"),
+              state = "MO",
+              county = "Boone County",
+              year = 2021) %>% 
+  mutate(variable = "F")
+
+male_pop <- get_acs(geography = "county",
+              variables = c(population = "B01001_002"),
+              state = "MO",
+              county = "Boone County",
+              year = 2021) %>% 
+  mutate(variable = "M")
+
+bc_sex_census <- bind_rows(female_pop, male_pop)
+
+bcj_master %>% 
+  count(sex, name) %>% #in two steps because of repeats...although I'm not sure if that matters
+  group_by(sex) %>% 
+  summarise(total_sex = n()) %>% 
+  left_join(select(bc_sex_census, variable, estimate), by = c("sex" = "variable")) %>% 
+  mutate(jail_rate = (total_sex/estimate)*100000)
+  
+#Men jailed at higher rate -- that is not surprising
+
+```
+```{r}
+#Black men - B01001B_002
+#Black women - B01001B_017
+#White men - B01001A_002
+#White women - B01001A_017
+
+bmale_pop <- get_acs(geography = "county",
+              variables = c(population = "B01001B_002"),
+              state = "MO",
+              county = "Boone County",
+              year = 2021) %>% 
+  mutate(variable = "black male")
+
+bfemale_pop <- get_acs(geography = "county",
+              variables = c(population = "B01001B_017"),
+              state = "MO",
+              county = "Boone County",
+              year = 2021) %>% 
+  mutate(variable = "black female")
+
+wmale_pop <- get_acs(geography = "county",
+              variables = c(population = "B01001A_002"),
+              state = "MO",
+              county = "Boone County",
+              year = 2021) %>% 
+  mutate(variable = "white male")
+
+wfemale_pop <- get_acs(geography = "county",
+              variables = c(population = "B01001A_017"),
+              state = "MO",
+              county = "Boone County",
+              year = 2021) %>% 
+  mutate(variable = "white female")
+
+sex_race <- bind_rows(wmale_pop, wfemale_pop, bmale_pop, bfemale_pop)
+
+bcj_master %>% 
+  filter(race == "B" | race == "W") %>%
+  group_by(sex, race) %>% 
+  summarise(total_detainees = n()) %>% 
+  mutate(variable = "variable",
+         variable = if_else(race == "B" & sex == "M", "black male", variable),
+         variable = if_else(race == "B" & sex == "F", "black female", variable),
+         variable = if_else(race == "W" & sex == "M", "white male", variable),
+         variable = if_else(race == "W" & sex == "F", "white female", variable)) %>% 
+  left_join(select(sex_race, variable, estimate), by = "variable") %>% 
+  mutate(jail_rate = (total_detainees/estimate)*100000)
+
+#This shows Black men are jailed at a crazy high rate
+```
+
+
+```{r}
+#How many jail detainees are brought in on FTA charges?
+bcj_master %>% 
+  filter(fta == "Y") #About 37% of arrests in here were FTA related
+
+#Break up by month
+
+monthly_arrests <- bcj_master %>% 
+  mutate(month = month(booking_date)) %>% 
+  group_by(month) %>% 
+  summarise(total_arrests = n())
+
+bcj_master %>% 
+  mutate(month = month(booking_date)) %>% 
+  group_by(month, fta) %>% 
+  summarise(total_of_type = n()) %>% 
+  left_join(monthly_arrests, by = "month") %>% 
+  mutate(pct_of_total = (total_of_type/total_arrests)*100) #Shows that FTA charges make up roughly 40% of all charges each month
+```
+Lower income folks spend greater portion of time than people in jail....so many who are in are black that this does still affect poc more
