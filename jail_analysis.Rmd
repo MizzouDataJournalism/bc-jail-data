@@ -1,0 +1,633 @@
+---
+title: "Jail Analysis File"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(lubridate)
+library(ggplot2)
+```
+
+```{r}
+#read in latest files
+bcj_master <- read_csv("data/bcj_master.csv")
+master_list_raw <- read_csv("data/master_list_raw.csv")
+seven_master <- read_csv("data/seven_master_raw.csv")
+same_day_releases <- read_csv("data/same_day_releases.csv")
+
+```
+
+```{r}
+#Integrity checks
+
+#Check dates -- did I miss any uploads? (yes) Is the data still sound enough for analysis?
+master_list_raw %>% count(download_date)
+
+bcj_master %>% 
+  filter(!is.na(race))
+#average bond by race
+```
+
+
+```{r}
+#Create categories of charges -- based on previous reporting I found studying bail and what I've browsed in the data, I want to track violent crimes, property crimes, drug crimes and traffic crimes. I will also create a separate field to indicate FTA charges and probation violations. 
+
+#I used the UCR handbook to define "violent crimes" and "property crimes" and tried to capture as many spelling variations as I could find. Then I concatenated them into one field, "crime_types" to capture instances where their might be more than one type of charge per person.
+bcj_master <- bcj_master %>% 
+  mutate(violent = "", 
+         violent = if_else(grepl("assault", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("aslt", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("murder", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("manslaughter", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("abuse", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("sodomy", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("rape", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("molestation", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("robbery", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("armed", charges, ignore.case = T), "violent", violent),
+         violent = if_else(grepl("weapon", charges, ignore.case = T), "violent", violent),
+         drug = "",
+         drug = if_else(grepl("subs", charges, ignore.case = T), "drug", drug),
+         drug = if_else(grepl("delivery", charges, ignore.case = T), "drug", drug),
+         drug = if_else(grepl("drug", charges, ignore.case = T), "drug", drug),
+         property = "",
+         property = if_else(grepl("stealing", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("prop", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("burg", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("arson", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("larceny", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("theft", charges, ignore.case = T), "property", property),
+         property = if_else(grepl("trespass", charges, ignore.case = T), "property", property),
+         traffic = "",
+         traffic = if_else(grepl("dws", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("dwi", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("dwr", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("driv", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("license", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("reg", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("veh", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("plate", charges, ignore.case = T), "traffic", traffic),
+         traffic = if_else(grepl("speed", charges, ignore.case = T), "traffic", traffic)) %>% 
+  mutate(crime_types = paste0(violent, " ", drug, " ", property, " ", traffic),
+         crime_types = if_else(crime_types == "   ", "other", crime_types)) %>% 
+  select(-c(violent, drug, property, traffic))
+  
+#Trim all the white space 
+bcj_master$crime_types <- trimws(bcj_master$crime_types)
+
+#FTA
+bcj_master <- bcj_master %>% 
+  mutate(fta = if_else(grepl("FTA", charges), "Y", "N"))
+
+#Probation violations
+bcj_master <- bcj_master %>% 
+  mutate(prob_violation = "N",
+         prob_violation = if_else(grepl("prob vio", charges, ignore.case = T), "Y", prob_violation), 
+         prob_violation = if_else(grepl("probation", charges, ignore.case = T), "Y", prob_violation))
+
+```
+
+```{r}
+#Repeate above for master list -- want to be able to see bond PER CHARGE
+master_list_raw <- master_list_raw %>% 
+  mutate(crime_type = "other", #This will be the catch-all for things that don't fit into any category I can think of
+         crime_type = if_else(grepl("assault", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("aslt", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("murder", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("manslaughter", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("abuse", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("sodomy", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("rape", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("molestation", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("robbery", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("armed", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("weapon", charge_description, ignore.case = T), "violent", crime_type),
+         crime_type = if_else(grepl("subs", charge_description, ignore.case = T), "drug", crime_type),
+         crime_type = if_else(grepl("delivery", charge_description, ignore.case = T), "drug", crime_type),
+         crime_type = if_else(grepl("drug", charge_description, ignore.case = T), "drug", crime_type),
+         crime_type = if_else(grepl("stealing", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("prop", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("burg", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("arson", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("larceny", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("theft", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("trespass", charge_description, ignore.case = T), "property", crime_type),
+         crime_type = if_else(grepl("dwi", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("dws", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("dwr", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("driv", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("license", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("reg", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("veh", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("plate", charge_description, ignore.case = T), "traffic", crime_type),
+         crime_type = if_else(grepl("speed", charge_description, ignore.case = T), "traffic", crime_type),)
+
+#FTA
+master_list_raw <- master_list_raw %>% 
+  mutate(fta = if_else(grepl("FTA", charge_description), "Y", "N"))
+
+#Probation violations
+master_list_raw <- master_list_raw %>%
+  mutate(prob_violation = "N",
+         prob_violation = if_else(grepl("prob vio", charge_description, ignore.case = T), "Y", prob_violation), 
+         prob_violation = if_else(grepl("probation", charge_description, ignore.case = T), "Y", prob_violation))
+
+```
+
+
+```{r}
+#Q: What is the median bond amount set for different categories of charges, by race?
+
+#A lot of  crimes are probably denied bail and will be listed as 0, making this harder to track. The amount may not matter as much as who is offered bail and who isn't. Filter to look only at crimes that are granted bail, to start.
+
+master_list_raw %>% 
+  select(-download_date) %>% 
+  distinct() %>% 
+  filter(bond_amt > 0) %>% 
+  group_by(crime_type) %>% 
+  summarise(median_bond = median(bond_amt))
+
+#Check mean average, too
+master_list_raw %>% 
+  select(-download_date) %>% 
+  distinct() %>% 
+  filter(bond_amt > 0) %>% 
+  group_by(crime_type) %>% 
+  summarise(median_bond = mean(bond_amt))
+
+master_list_raw %>% 
+  select(-download_date) %>% 
+  distinct() %>% 
+  filter(bond_amt > 0) %>% 
+  group_by(crime_type, race) %>% 
+  summarise(median_bond = median(bond_amt))
+
+master_list_raw %>% 
+  select(-download_date) %>% 
+  distinct() %>% 
+  filter(bond_amt > 0) %>% 
+  group_by(crime_type, race) %>% 
+  summarise(median_bond = mean(bond_amt))
+
+#This does appear to show that for crimes that are granted bail, Black detainees are to pay more, on average (median), than white detainees.
+
+```
+
+```{r}
+#Do the same with sex? Men consistently charged more for bail.
+
+master_list_raw %>% 
+  select(-download_date) %>% 
+  distinct() %>% 
+  filter(bond_amt > 0) %>% 
+  group_by(crime_type, sex) %>% 
+  summarise(median_bond = median(bond_amt))
+
+master_list_raw %>% 
+  select(-download_date) %>% 
+  distinct() %>% 
+  filter(bond_amt > 0) %>% 
+  group_by(crime_type, sex) %>% 
+  summarise(median_bond = mean(bond_amt))
+
+master_list_raw %>% 
+  select(-download_date) %>% 
+  distinct() %>% 
+  filter(bond_amt > 0) %>% 
+  filter(sex == "F") %>% 
+  group_by(crime_type)%>% 
+  summarise(median_bond = mean(bond_amt))
+
+```
+
+
+
+```{r}
+#How many detainees are released on their own recognizance? Do these detainees have any traits in common?
+
+bcj_master %>% 
+  filter(grepl("recognizance", court_disposition, ignore.case = T)) %>% 
+  count(fta)
+#Most are fta
+
+bcj_master %>% 
+  filter(grepl("recognizance", court_disposition, ignore.case = T)) %>% 
+  count(crime_types) %>% 
+  arrange(desc(n))
+
+bcj_master %>% 
+  filter(grepl("recognizance", court_disposition, ignore.case = T)) %>% 
+  filter(crime_types == "other")
+#Most traffic-related
+
+bcj_master %>% 
+  filter(grepl("recognizance", court_disposition, ignore.case = T)) %>% 
+  count(race)
+
+bcj_master %>% 
+  filter(grepl("recognizance", court_disposition, ignore.case = T)) %>% 
+  filter(booking_date == release_date)
+#Most released within same day -- no race information
+
+bcj_master %>% 
+  filter(grepl("recognizance", court_disposition, ignore.case = T)) %>% 
+  count(sex)
+
+```
+
+
+```{r}
+#Any other patterns I can find with women
+
+#Mostly non-violent
+bcj_master %>% 
+  filter(sex == "F") %>% 
+  count(crime_types) %>% 
+  arrange(desc(n))
+
+bcj_master %>% 
+  filter(sex == "F") %>%
+  filter(crime_types == "other")
+
+bcj_master %>% 
+  filter(sex == "F") %>%
+  count(name, race) %>% 
+  arrange(desc(n))
+```
+```{r}
+#How many people brought into jail each month
+bcj_master %>% 
+  mutate(month = month(booking_date)) %>% 
+  count(month)
+
+#How many of those are FTAs? -- So far, roughtly 40%. That seems significant
+bcj_master %>% 
+  mutate(month = month(booking_date)) %>% 
+  count(month, fta)
+
+#How many FTAs each month are women? -- roughly half the amount of men
+bcj_master %>% 
+  mutate(month = month(booking_date)) %>% 
+  filter(fta == "Y") %>% 
+  count(month, sex)
+
+#How many FTAs each month are Black? -- there are still more white poeple, but it's very close and seems like it could be disproportionate with county demographics
+bcj_master %>% 
+  mutate(month = month(booking_date)) %>% 
+  filter(fta == "Y") %>% 
+  count(month, race)
+
+
+```
+
+
+```{r}
+#What patterns exist for FTA defendants (failure to appear?) How many times have they been jailed/bonded? Does it suggest bond companies using predatory practices?
+
+bcj_master %>% 
+  filter(fta == "Y") %>% 
+  count(name)
+
+#Most common crime types?
+bcj_master %>% 
+  filter(fta == "Y") %>% 
+  count(crime_types) %>% 
+  arrange(desc(n))
+
+bcj_master %>% 
+  filter(fta == "Y") %>% 
+  filter(crime_types == "other")
+#Mostly traffic-related, very few violent
+
+#Most common race?
+bcj_master %>% 
+  filter(fta == "Y") %>%
+  count(race) %>% 
+  arrange(desc(n))
+#Hard to say because most are not in long enough to be put on detainnee list
+
+#Sex?
+bcj_master %>% 
+  filter(fta == "Y") %>%
+  count(sex) %>% 
+  arrange(desc(n))
+#Men are nearly double women
+
+
+  
+```
+
+
+```{r}
+#How many people have returned to jail more than once since Dec. 1?
+
+repeats <- bcj_master %>% 
+  count(name) %>%
+  arrange(desc(n)) %>% 
+  filter(n > 1)
+#Shows how many people appear more than once -- this isn't enough though because there are some errors with the jail's data entry ("Wilkins, Chatrina Latrice R)
+
+repeats <- bcj_master %>% 
+  semi_join(repeats, by = "name") %>% 
+  arrange(match(booking_date, unique(booking_date)), name) %>% 
+  arrange(booking_date) %>% 
+  group_by(name) %>% 
+  summarise(charges = toString(charges), booked = toString(booking_date), releases = toString(release_date))
+  
+  
+```
+
+```{r}
+#Look for any demographic trends with repeats.
+
+#How many are FTA?
+bcj_master %>% 
+  semi_join(repeats, by = "name") %>% 
+  filter(fta == "Y") %>% 
+  count(name)
+
+#Race?
+part1 <- repeats %>% 
+  left_join(select(bcj_master, race, name), by = "name") %>% 
+  distinct() %>% 
+  count(name, race) %>% 
+  filter(!is.na(race))
+
+part2 <- repeats %>% 
+  left_join(select(bcj_master, race, name), by = "name") %>% 
+  distinct() %>% 
+  count(name, race) %>% 
+  filter(is.na(race))
+
+part3 <- part2 %>% 
+  anti_join(part1, by = "name")
+
+repeats_race <- bind_rows(part1, part3)
+
+rm(part1, part2, part3)
+
+repeats_race %>% 
+  count(race)
+#The fact that so many have NA in the "race" field indicates they are staying less than 24 hours and never showing up on the jail detainnee list.
+
+#Charges?
+repeats %>% 
+  right_join(select(bcj_master, crime_types, name), by = "name") %>% 
+  distinct() %>% 
+  count(crime_types) %>% 
+  arrange(desc(n))
+```
+
+```{r}
+#How much time are people spending incarcerated based on race, also by charge/crime-type and bond amount
+release_time <- bcj_master %>% 
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% 
+  mutate(time_spent = release_date-booking_date)
+
+release_time %>% 
+  filter(grepl("bonded", court_disposition, ignore.case = T) | grepl("recognizance", court_disposition, ignore.case = T) | grepl("no charges", court_disposition, ignore.case = T)) %>% 
+  group_by(race, total_bond) %>% 
+  summarise(median_time = median(time_spent))
+
+#What were the charges/bond like for people who spent more than 0 days in jail?
+
+#Graph correlation of bond amount and race to time spent (not median, an actual line graph)
+release_time %>% 
+  filter(race == "B" | race == "W") %>% 
+  filter(total_bond > 0) %>% 
+  ggplot(aes(x = time_spent, y = total_bond, color = race)) +
+  geom_line() +
+  geom_point() +
+  xlim(0, 25) + #most clustered in this range so zooming in to look closer
+  labs(title = "Total bond and time spent in jail, by race")
+
+#Median
+release_time %>% 
+  filter(time_spent > 0) %>% 
+  group_by(race, total_bond) %>% 
+  summarise(median_time = median(time_spent)) %>% 
+ggplot(aes(x = median_time, y = total_bond, color = race)) +
+  geom_line() +
+  geom_point() +
+  xlim(0, 25) + #most clustered in this range so zooming in to look closer
+  labs(title = "Total bond and time spent in jail, by race")  
+
+```
+```{r}
+#Median total bond per race
+
+bcj_master %>% 
+  group_by(race) %>% 
+  summarise(median(total_bond)) #Black people have a lower bond, on average
+
+release_time %>% 
+  group_by(race) %>% 
+  summarise(median(time_spent))#Black people have slightly higher time spent (one extra day), on average
+
+```
+
+
+```{r}
+#Plot addresses of people arrested -- who is overpoliced? Color-code by time spent in jail and by bail amount. Where do repeats live? 
+seven_master %>% 
+  count(address)
+
+ codevio_master <- codevio_master %>% 
+  tidygeocoder::geocode(clean_address, method = 'osm', lat = latitude, lon = longitude, progress = TRUE)
+
+addresses <- seven_master %>% 
+  count(address) %>% 
+  tidygeocoder::geocode(address, method = 'osm', lat = latitude, lon = longitude, progress = TRUE)
+
+addresses %>% 
+  filter(is.na(latitude)) %>% 
+  arrange(desc(n))
+  
+```
+
+```{r}
+#Racial trends - by gender, crime type
+```
+
+
+
+```{r}
+#Are bail/bond commesurate to charges, bond amount, race
+#How much time are people spending incarcerated based on race, also by charge/crime-type and bond amount
+
+#How long does it typically take for certain types of charges to make bond or be released? Is there a difference by race?
+
+#These are people who have been booked AND released during the time period we have data
+release_time <- bcj_master %>% 
+  filter(!is.na(release_date) & !is.na(booking_date)) %>% 
+  mutate(time_spent = release_date-booking_date)
+
+median(release_time$time_spent)
+
+release_time %>% arrange(desc(time_spent))
+#Need to find a way to tell if someone was released or if they were just transferred to prison or another jail - court disposition could help, but I'm not sure how reliable it is...maybe I can match them to the Prison Sunshine File...will do that later
+
+release_time %>% 
+  group_by(crime_types, race) %>% 
+  summarise(avg_time_spent = median(time_spent))
+#Time spent goes up when there is more than one type of charge (not surprising). White people seem to spend longer amounts in jail, but that could be distorted due to the number of same-day releases from all races, and the fact there are probably more white people than any other race in BCJ.
+
+#Get rid of people released the same day...they won't have race information
+#Only 422 people in this time period -- that's interesting.
+release_time <- release_time %>% 
+  filter(booking_date != release_date)
+
+bcj_master %>% count(race)
+
+#Any release-time patterns by sex? -- Not a strong pattern here
+
+release_time %>% 
+  group_by(crime_types, sex) %>% 
+  summarise(avg_time_spent = median(time_spent))
+
+#Look for any connection between bond amount and time spent
+release_time %>% 
+  filter(race == "W") %>% 
+  ggplot(aes(x = total_bond, y = time_spent)) +
+  geom_line() +
+  geom_point() 
+
+release_time %>% 
+  group_by()
+  ggplot(aes(x = time_spent, y = total_bond)) +
+  geom_line() +
+  geom_point() 
+  
+```
+
+```{r}
+#Are bail/bond commesurate to charges, bond amount, race
+#How much time are people spending incarcerated based on race, also by charge/crime-type and bond amount
+
+#First, get a better understanding of what the release_date implies. I set it up to mark whenever a person disappears from the jail roster/0700 report. So the people with NA release dates should theortetically all be on the latest roster
+
+latest_roster <- master_list_raw %>% 
+  filter(download_date == "2023-03-30") %>% 
+  count(name_join)
+
+#how many people with no release date...should be around 216 based on latest jail roster. There are 248. Who are the extras?
+no_release_date <- bcj_master %>% 
+  filter(is.na(release_date))
+
+#compare the two
+full_join(latest_roster, no_release_date, by = c("name_join" = "name")) %>% filter(is.na(n)) 
+#The extras appear to all be repeats -- people who left the jail and returned. They weren't picked up by my same-day-release code because the join is on names. Basically, same-day list is only picking up people in their first visit for the jail. All these people who came back, but didn't stay more than a day, didn't get picked up by that join
+
+#For these folks, we can isolate the repeats and just make release_date = booking date as a quick fix
+
+#Not everyone is a repeat...what made these records go wrong?? Something had to have been off with the join -- It's age. Not for all of them, but for a lot of them, they had a birthday while in jail and that screwed up the join
+full_join(latest_roster, no_release_date, by = c("name_join" = "name")) %>% filter(is.na(n)) %>% 
+  anti_join(repeats, by = c("name_join" = "name"))
+
+#I fixed the join in the other file, but need to go through these and fix them as well -- doing it manually since there's not that many
+full_join(latest_roster, no_release_date, by = c("name_join" = "name")) %>% filter(is.na(n)) %>% 
+  anti_join(repeats, by = c("name_join" = "name")) 
+
+bcj_master <- bcj_master %>% 
+  mutate(release_date = if_else(name == "BENTON, JOSHUA HARDY", as.Date("2023-02-04"), release_date)) %>% 
+  mutate(release_date = if_else(name == "IRWIN, DEEANN LYNN", as.Date("2023-01-31"), release_date)) %>% 
+  mutate(release_date = if_else(name == "DARRIS, BRANDON DEMETRIS", as.Date("2023-03-05"), release_date)) %>% 
+  mutate(release_date = if_else(name == "STONE, DUSTIN DUANE", as.Date("2023-01-23"), release_date)) %>% 
+  mutate(release_date = if_else(name == "ADAMS, TARA ELIZABETH", as.Date("2023-01-02"), release_date)) %>% 
+  mutate(release_date = if_else(name == "BARRETT, DEION BRIAN", as.Date("2023-01-06"), release_date)) %>% 
+  mutate(release_date = if_else(name == "ANDREWS, JOSEPH DAVID", as.Date("2023-02-05"), release_date)) %>% 
+  mutate(release_date = if_else(name == "BUSH, MALCOLM DWAYNE", as.Date("2023-03-20"), release_date)) %>% 
+  mutate(release_date = if_else(name == "CROWLEY, MIKEL DERRICE", as.Date("2023-03-13"), release_date)) %>% 
+  mutate(release_date = if_else(name == "GARY, JEVON SHAQUILLE", as.Date("2022-12-20"), release_date)) %>% 
+  mutate(release_date = if_else(name == "HIGGINS, WILLIE LEE-JACARI", as.Date("2022-12-15"), release_date)) %>% 
+  mutate(release_date = if_else(name == "MANCILLA, EDMUNDO OLEA", as.Date("2023-03-24"), release_date)) %>% 
+  mutate(release_date = if_else(name == "PRESIDENT, MUSTAFA ALI", as.Date("2022-12-20"), release_date)) %>% 
+  mutate(release_date = if_else(name == "SHANNON, DRAKE LEE", as.Date("2023-03-12"), release_date))
+  
+#Check
+no_release_date <- bcj_master %>% 
+  filter(is.na(release_date))
+
+full_join(latest_roster, no_release_date, by = c("name_join" = "name")) %>% filter(is.na(n)) %>% 
+  semi_join(repeats, by = c("name_join" = "name"))
+
+#Fixed the original code -- but still need to correct the records that are already screwed up
+
+bcj_master <- bcj_master %>% 
+  mutate(release_date = if_else(name == "MORRIS, COREY DREMOND" & booking_date == "2023-03-27", as.Date("2023-03-27"), release_date)) %>% 
+  mutate(release_date = if_else(name == "MACK, ANTHONY DEWAYNE" & booking_date == "2023-03-23", as.Date("2023-03-23"), release_date)) %>% 
+  mutate(release_date = if_else(name == "MATTICKER, SEAN RICHARD" & booking_date == "2023-03-20", as.Date("2023-03-20"), release_date)) %>% 
+  mutate(release_date = if_else(name == "STRUBE, SHYLER RAY" & booking_date == "2023-03-20", as.Date("2023-03-20"), release_date)) %>% 
+    mutate(release_date = if_else(name == "STRUBE, SHYLER RAY" & is.na(booking_date), as.Date("2023-02-07"), release_date)) %>% 
+  mutate(release_date = if_else(name == "WEAKLEY, DEVIN KEWAUN" & booking_date == "2023-03-13", as.Date("2023-03-13"), release_date)) %>% 
+  mutate(release_date = if_else(name == "SKOUBY, JOSHUA MAKI" & booking_date == "2023-03-09", as.Date("2023-03-09"), release_date)) %>% 
+  mutate(release_date = if_else(name == "TAYLOR, ALI LANE" & booking_date == "2023-03-09", as.Date("2023-03-09"), release_date)) %>% 
+  mutate(release_date = if_else(name == "SILVEY, CHARLES DANIEL SR" & booking_date == "2023-03-02", as.Date("2023-03-21"), release_date)) %>% 
+  mutate(release_date = if_else(name == "WEAKLEY, DEVIN KEWAUN" & booking_date == "2023-03-03", as.Date("2023-03-03"), release_date)) %>% 
+  mutate(release_date = if_else(name == "TURPIN, NICHOLAS ALAN" & booking_date == "2023-02-18", as.Date("2023-02-18"), release_date)) %>% 
+  mutate(release_date = if_else(name == "SKAGGS, DEVIN RAY" & booking_date == "2023-02-17", as.Date("2023-02-17"), release_date)) %>% 
+  mutate(release_date = if_else(name == "SKAGGS, DEVIN RAY" & booking_date == "2022-12-13", as.Date("2022-12-13"), release_date)) %>% 
+  mutate(release_date = if_else(name == "MCCLAIN, SHANA DESHAY" & booking_date == "2023-02-14", as.Date("2023-02-22"), release_date)) %>% 
+  mutate(release_date = if_else(name == "DALTON, RAYMOND RUSH" & booking_date == "2023-02-10", as.Date("2023-02-10"), release_date)) %>% 
+  mutate(release_date = if_else(name == "HILL, WILLIAM ALEXANDER" & booking_date == "2023-02-03", as.Date("2023-02-03"), release_date)) %>% 
+  mutate(release_date = if_else(name == "THOMAS, ERIC BERNARD JR" & booking_date == "2023-02-01", as.Date("2023-02-01"), release_date)) %>% 
+  mutate(release_date = if_else(name == "HAWKINS, KEENAN ANDREW" & booking_date == "2023-01-31", as.Date("2023-01-31"), release_date)) %>% 
+  mutate(release_date = if_else(name == "JOHNSON, DORION LAKEN" & booking_date == "2023-01-24", as.Date("2023-01-24"), release_date)) %>% 
+  mutate(release_date = if_else(name == "JOHNSON, DORION LAKEN" & booking_date == "2022-12-23", as.Date("2022-12-23"), release_date)) %>% 
+  mutate(release_date = if_else(name == "VERSEY, LAMONT W" & booking_date == "2023-01-15", as.Date("2023-01-15"), release_date)) %>% 
+  mutate(release_date = if_else(name == "THEROFF, MADISON LEIGH" & booking_date == "2023-01-03", as.Date("2023-01-03"), release_date)) %>% 
+    mutate(release_date = if_else(name == "MATTICKER, SEAN RICHARD" & is.na(booking_date), as.Date("2022-12-15"), release_date)) %>% 
+      mutate(release_date = if_else(name == "MCCLAIN, SHANA DESHAY" & is.na(booking_date), as.Date("2022-12-11"), release_date)) %>% 
+        mutate(release_date = if_else(name == "SKAGGS, DEVIN RAY" & is.na(booking_date), as.Date("2022-12-07"), release_date)) %>% 
+        mutate(release_date = if_else(name == "TURPIN, NICHOLAS ALAN" & is.na(booking_date), as.Date("2022-12-06"), release_date))
+  
+#Check
+no_release_date <- bcj_master %>% 
+  filter(is.na(release_date))
+
+full_join(latest_roster, no_release_date, by = c("name_join" = "name")) %>% filter(is.na(n)) %>% 
+  semi_join(repeats, by = c("name_join" = "name"))  
+
+```
+```{r}
+
+#HERE IS THE FIX
+
+released <- bcj_master %>% filter(!is.na(release_date))
+
+#People in new seven whose name matches someone in "released" but is not present in the latest detainees download (detainees2)
+more_same_day_releases <- new_seven_report %>% 
+  semi_join(released, by = "name") %>% 
+  anti_join(detainees2, by = c("name" = "name_join")) %>% 
+  group_by(name, age, sex, booking_date) %>% 
+  summarise(charges = toString(charge_description), court_disposition = toString(court_disposition), arresting_agencies = toString(arresting_agency), total_bond = sum(bond_amt)) %>% 
+  mutate(release_date = booking_date)
+
+
+bcj_master$age.x <- as.numeric(bcj_master$age.x) 
+bcj_master$age.x.x <- as.numeric(bcj_master$age.x.x)            
+bcj_master$age.x.x.x <- as.numeric( bcj_master$age.x.x.x)
+bcj_master$age.x.x.x.x <- as.numeric(bcj_master$age.x.x.x.x) 
+bcj_master$age.x.x.x.x.x <- as.numeric(bcj_master$age.x.x.x.x.x)
+
+bcj_master$age.y <- as.numeric(bcj_master$age.y) 
+bcj_master$age.y.y <- as.numeric(bcj_master$age.y.y)            
+bcj_master$age.y.y.y <- as.numeric( bcj_master$age.y.y.y)
+
+bcj_master <- bcj_master %>% 
+  mutate(age = if_else(!is.na(age.x), age.x, age),
+         age = if_else(!is.na(age.y), age.y, age),
+         age = if_else(!is.na(age.x.x), age.x.x, age),
+         age = if_else(!is.na(age.y.y), age.y.y, age),
+         age = if_else(!is.na(age.x.x.x), age.x.x.x, age),
+         age = if_else(!is.na(age.y.y.y), age.y.y.y, age))%>% 
+  select(-c(age.x, age.y, age.x.x, age.y.y, age.x.x.x, age.y.y.y))
+
+bcj_master <- bcj_master %>% select(-age.x.x.x.x)
+
+```
+
