@@ -1,0 +1,16 @@
+name: bc jail scraper
+
+on: 
+  workflow_dispatch:
+#  schedule:
+#    - cron: "5 1 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    name: Scrape
+    runs-on: ubuntu-latest
+    steps:
+      -  
